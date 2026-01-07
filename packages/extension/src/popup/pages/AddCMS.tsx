@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ArrowLeft, Globe } from 'lucide-react'
+import { ArrowLeft, Globe, ExternalLink } from 'lucide-react'
 import { Button } from '../components/ui/Button'
 import { useCMSStore, type CMSType } from '../stores/cms'
 import { trackPageView, trackPlatformExpansion } from '../../lib/analytics'
@@ -23,14 +23,30 @@ const cmsOptions: CMSOption[] = [
     id: 'typecho',
     name: 'Typecho',
     description: '支持 XML-RPC 接口',
-    icon: 'https://typecho.org/favicon.ico',
+    icon: '/assets/typecho.ico',
   },
   {
     id: 'metaweblog',
     name: 'MetaWeblog API',
-    description: '通用博客接口协议',
-    icon: '/assets/icon-48.png',
+    description: '通用博客接口协议（博客园等）',
+    icon: 'https://www.cnblogs.com/favicon.ico',
   },
+]
+
+// 支持的第三方平台列表
+const supportedPlatforms = [
+  { name: '知乎', url: 'https://www.zhihu.com', icon: 'https://static.zhihu.com/heifetz/favicon.ico' },
+  { name: '掘金', url: 'https://juejin.cn', icon: 'https://lf3-cdn-tos.bytescm.com/obj/static/xitu_juejin_web/static/favicons/favicon-32x32.png' },
+  { name: 'CSDN', url: 'https://blog.csdn.net', icon: 'https://g.csdnimg.cn/static/logo/favicon32.ico' },
+  { name: '今日头条', url: 'https://mp.toutiao.com', icon: 'https://sf1-cdn-tos.toutiaostatic.com/obj/ttfe/pgcfe/sz/mp_logo.png' },
+  { name: '百家号', url: 'https://baijiahao.baidu.com', icon: 'https://pic.rmb.bdstatic.com/10aborede5e85e725f488058cae625571c56.png' },
+  { name: 'B站专栏', url: 'https://member.bilibili.com/article-text/home', icon: 'https://www.bilibili.com/favicon.ico' },
+  { name: '微博', url: 'https://weibo.com', icon: 'https://weibo.com/favicon.ico' },
+  { name: '搜狐号', url: 'https://mp.sohu.com', icon: 'https://mp.sohu.com/favicon.ico' },
+  { name: '语雀', url: 'https://www.yuque.com', icon: 'https://mdn.alipayobjects.com/huamei_0prmtq/afts/img/A*vMxOQIh4KBMAAAAAAAAAAAAADvuFAQ/original' },
+  { name: '雪球', url: 'https://xueqiu.com', icon: 'https://xueqiu.com/favicon.ico' },
+  { name: '人人都是PM', url: 'https://www.woshipm.com', icon: 'https://www.woshipm.com/favicon.ico' },
+  { name: '豆瓣', url: 'https://www.douban.com', icon: 'https://www.douban.com/favicon.ico' },
 ]
 
 export function AddCMSPage() {
@@ -100,37 +116,71 @@ export function AddCMSPage() {
       </button>
 
       {step === 'select' && (
-        <>
-          <h2 className="text-lg font-semibold mb-1">选择站点类型</h2>
-          <p className="text-xs text-muted-foreground mb-4">
-            选择你的博客系统类型
-          </p>
+        <div className="space-y-6">
+          {/* 自建站点 */}
+          <div>
+            <h2 className="text-lg font-semibold mb-1">自建站点</h2>
+            <p className="text-xs text-muted-foreground mb-3">
+              添加你的博客系统
+            </p>
 
-          <div className="space-y-2">
-            {cmsOptions.map(cms => (
-              <button
-                key={cms.id}
-                onClick={() => handleSelectCMS(cms.id)}
-                className="w-full flex items-center gap-3 p-4 rounded-lg border hover:border-primary transition-colors text-left"
-              >
-                <img
-                  src={cms.icon}
-                  alt={cms.name}
-                  className="w-10 h-10 rounded"
-                  onError={e => {
-                    (e.target as HTMLImageElement).src = '/assets/icon-48.png'
-                  }}
-                />
-                <div className="flex-1">
-                  <div className="font-medium">{cms.name}</div>
-                  <div className="text-xs text-muted-foreground">
-                    {cms.description}
+            <div className="space-y-2">
+              {cmsOptions.map(cms => (
+                <button
+                  key={cms.id}
+                  onClick={() => handleSelectCMS(cms.id)}
+                  className="w-full flex items-center gap-3 p-3 rounded-lg border hover:border-primary transition-colors text-left"
+                >
+                  <img
+                    src={cms.icon}
+                    alt={cms.name}
+                    className="w-8 h-8 rounded"
+                    onError={e => {
+                      (e.target as HTMLImageElement).src = '/assets/icon-48.png'
+                    }}
+                  />
+                  <div className="flex-1">
+                    <div className="font-medium text-sm">{cms.name}</div>
+                    <div className="text-xs text-muted-foreground">
+                      {cms.description}
+                    </div>
                   </div>
-                </div>
-              </button>
-            ))}
+                </button>
+              ))}
+            </div>
           </div>
-        </>
+
+          {/* 第三方平台 */}
+          <div>
+            <h2 className="text-lg font-semibold mb-1">第三方平台</h2>
+            <p className="text-xs text-muted-foreground mb-3">
+              点击前往登录，登录后自动识别
+            </p>
+
+            <div className="grid grid-cols-4 gap-2">
+              {supportedPlatforms.map(platform => (
+                <button
+                  key={platform.name}
+                  onClick={() => chrome.tabs.create({ url: platform.url })}
+                  className="flex flex-col items-center gap-1 p-2 rounded-lg hover:bg-muted transition-colors"
+                  title={`前往 ${platform.name} 登录`}
+                >
+                  <img
+                    src={platform.icon}
+                    alt={platform.name}
+                    className="w-6 h-6 rounded"
+                    onError={e => {
+                      (e.target as HTMLImageElement).src = '/assets/icon-48.png'
+                    }}
+                  />
+                  <span className="text-[10px] text-muted-foreground truncate w-full text-center">
+                    {platform.name}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
       )}
 
       {step === 'config' && selectedCMS && (

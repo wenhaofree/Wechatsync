@@ -566,7 +566,9 @@ function getCmsIcon(type: string): string {
     case 'wordpress':
       return 'https://s.w.org/style/images/about/WordPress-logotype-simplified.png'
     case 'typecho':
-      return 'https://typecho.org/favicon.ico'
+      return '/assets/typecho.ico'
+    case 'metaweblog':
+      return 'https://www.cnblogs.com/favicon.ico'
     default:
       return '/assets/icon-48.png'
   }
