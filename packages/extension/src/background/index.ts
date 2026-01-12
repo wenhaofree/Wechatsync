@@ -9,7 +9,7 @@ import {
 } from '../adapters'
 import * as wordpressAdapter from '../adapters/cms/wordpress'
 import * as metaweblogAdapter from '../adapters/cms/metaweblog'
-import { startMcpClient, stopMcpClient, getMcpStatus } from '../mcp/client'
+import { startMcpClient, stopMcpClient, getMcpStatus, mcpClient } from '../mcp/client'
 import { createLogger } from '../lib/logger'
 import {
   trackSyncStart,
@@ -552,17 +552,24 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
     }
 
     case 'MCP_ENABLE': {
-      await chrome.storage.local.set({ mcpEnabled: true })
+      // 检查是否已有 token，没有才生成新的
+      const storage = await chrome.storage.local.get('mcpToken')
+      const token = storage.mcpToken || crypto.randomUUID()
+      await chrome.storage.local.set({ mcpEnabled: true, mcpToken: token })
+      // 设置 token 并启动客户端
+      mcpClient.setToken(token)
       startMcpClient()
       logger.info(' MCP enabled')
       trackMcpUsage('enable').catch(() => {})
       // 追踪 MCP 用户里程碑
       trackMilestone('mcp_user').catch(() => {})
-      return { success: true }
+      return { success: true, token }
     }
 
     case 'MCP_DISABLE': {
+      // 只关闭连接，保留 token（下次启用时复用）
       await chrome.storage.local.set({ mcpEnabled: false })
+      mcpClient.clearToken()
       stopMcpClient()
       logger.info(' MCP disabled')
       trackMcpUsage('disable').catch(() => {})
@@ -570,11 +577,12 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
     }
 
     case 'MCP_STATUS': {
-      const storage = await chrome.storage.local.get('mcpEnabled')
+      const storage = await chrome.storage.local.get(['mcpEnabled', 'mcpToken'])
       const mcpStatus = getMcpStatus()
       return {
         enabled: storage.mcpEnabled ?? false,
         connected: mcpStatus.connected,
+        token: storage.mcpToken,  // 返回 token 供 MCP Server 使用
       }
     }
 
@@ -935,9 +943,18 @@ chrome.runtime.onInstalled.addListener(async details => {
  * 启动时初始化 MCP（如果已启用）
  */
 async function initMcpIfEnabled() {
-  const storage = await chrome.storage.local.get('mcpEnabled')
+  const storage = await chrome.storage.local.get(['mcpEnabled', 'mcpToken'])
   if (storage.mcpEnabled) {
-    logger.info(' Starting MCP client...')
+    if (storage.mcpToken) {
+      mcpClient.setToken(storage.mcpToken)
+      logger.info(' Starting MCP client with existing token...')
+    } else {
+      // 没有 token，生成新的
+      const token = crypto.randomUUID()
+      await chrome.storage.local.set({ mcpToken: token })
+      mcpClient.setToken(token)
+      logger.info(' Starting MCP client with new token...')
+    }
     startMcpClient()
   }
 }

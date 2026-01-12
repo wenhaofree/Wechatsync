@@ -10,7 +10,9 @@
     "prod": "npm run build && cd dist && zip -r ../wechatsync-extension-v$(node -p \"require('../package.json').version\").zip .",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@wechatsync/core": "*",
@@ -25,6 +27,7 @@
     "zustand": "^4.4.7"
   },
   "devDependencies": {
+    "vitest": "^2.0.0",
     "@crxjs/vite-plugin": "^2.0.0-beta.23",
     "@types/chrome": "^0.0.254",
     "@types/js-md5": "^0.8.0",

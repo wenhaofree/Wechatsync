@@ -15,6 +15,7 @@ const logger = createLogger('MCPClient')
 interface RequestMessage {
   id: string
   method: string
+  token?: string  // 安全验证 token
   params?: Record<string, unknown>
 }
 
@@ -32,11 +33,29 @@ class McpClient {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private serverUrl = 'ws://localhost:9527'
 
+  // 安全验证 token
+  private token: string | null = null
+
   // 指数退避重连配置
   private reconnectAttempts = 0
   private readonly minReconnectInterval = 1000 // 1 秒
   private readonly maxReconnectInterval = 30000 // 30 秒
   private readonly maxReconnectAttempts = 100 // 最大尝试次数（约 30 分钟后停止）
+
+  /**
+   * 设置安全验证 token
+   */
+  setToken(token: string): void {
+    this.token = token
+    logger.debug('Token set')
+  }
+
+  /**
+   * 清除 token
+   */
+  clearToken(): void {
+    this.token = null
+  }
 
   /**
    * 连接到 MCP Server
@@ -164,12 +183,26 @@ class McpClient {
       let result: unknown
       let error: { code: number; message: string } | undefined
 
-      try {
-        result = await this.handleMethod(message.method, message.params)
-      } catch (e) {
+      // Token 验证
+      if (!this.token) {
         error = {
-          code: -1,
-          message: (e as Error).message,
+          code: 401,
+          message: 'MCP token not configured',
+        }
+      } else if (message.token !== this.token) {
+        logger.warn('Invalid token received')
+        error = {
+          code: 403,
+          message: 'Invalid or missing token',
+        }
+      } else {
+        try {
+          result = await this.handleMethod(message.method, message.params)
+        } catch (e) {
+          error = {
+            code: -1,
+            message: (e as Error).message,
+          }
         }
       }
 

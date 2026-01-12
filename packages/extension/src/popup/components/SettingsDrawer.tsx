@@ -11,6 +11,7 @@ interface SettingsDrawerProps {
 interface McpStatus {
   enabled: boolean
   connected: boolean
+  token?: string
 }
 
 interface CMSAccount {
@@ -35,6 +36,7 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
         setMcpStatus({
           enabled: response.enabled ?? false,
           connected: response.connected ?? false,
+          token: response.token,
         })
       }
     })
@@ -77,6 +79,7 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
           ...prev,
           enabled: !prev.enabled,
           connected: false,
+          token: response.token,  // 保存返回的 token
         }))
       }
     })
@@ -161,9 +164,19 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
             </div>
 
             {mcpStatus.enabled && (
-              <p className="text-xs text-muted-foreground">
-                运行 <code className="bg-muted px-1 rounded">yarn mcp</code> 启动服务
-              </p>
+              <div className="space-y-2">
+                <p className="text-xs text-muted-foreground">
+                  运行 <code className="bg-muted px-1 rounded">yarn mcp</code> 启动服务
+                </p>
+                {mcpStatus.token && (
+                  <div className="p-2 bg-muted/50 rounded text-xs">
+                    <p className="text-muted-foreground mb-1">Token (MCP Server 需要此 token):</p>
+                    <code className="block bg-background p-1.5 rounded break-all select-all">
+                      {mcpStatus.token}
+                    </code>
+                  </div>
+                )}
+              </div>
             )}
           </div>
 
