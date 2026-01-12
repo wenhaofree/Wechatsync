@@ -94,7 +94,6 @@ MCP Server 通过 stdio 模式与 Claude Code 通信，通过 WebSocket (`ws://l
 - `check_auth` - 检查指定平台登录状态
 - `sync_article` - 同步文章到指定平台
 - `extract_article` - 从当前页面提取文章
-- `upload_image` - 上传图片到可用平台
 
 ## 开发
 

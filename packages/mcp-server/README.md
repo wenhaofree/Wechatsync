@@ -79,17 +79,6 @@ yarn build:mcp
 
 从当前浏览器页面提取文章内容。
 
-### upload_image
-
-上传图片到图床平台，返回可公开访问的 URL。
-
-```
-参数:
-- imageData: string (必需) - 图片的 base64 数据（不含 data: 前缀）
-- mimeType: string (必需) - 图片 MIME 类型，如 image/png, image/jpeg
-- platform: string (可选) - 上传到哪个平台作为图床，默认 weibo
-```
-
 ## 环境变量
 
 - `MCP_TOKEN`: 安全验证 token（必需，需与 Chrome 扩展中设置的 token 一致）
