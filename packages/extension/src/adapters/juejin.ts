@@ -214,12 +214,27 @@ export class JuejinAdapter extends CodeAdapter {
         credentials: 'include',
       })
 
-      const data = await response.json() as { data?: string; message?: string }
+      const data = await response.json() as {
+        data?: string
+        message?: string
+        err_msg?: string
+        err_no?: number
+      }
+
+      // 检查错误
+      if (data.err_no && data.err_no !== 0) {
+        logger.warn('Upload failed:', data.err_msg || data.message)
+        return { url: src } // 失败时返回原 URL
+      }
+
       if (data.data) {
         logger.debug('Uploaded image by URL:', src.substring(0, 50), '->', data.data)
         return { url: data.data }
       }
-      throw new Error(data.message || 'Failed to upload image')
+
+      // 无数据返回原 URL
+      logger.warn('Upload returned no data')
+      return { url: src }
     } catch (error) {
       logger.warn('Failed to upload image by URL:', src, error)
       return { url: src } // 失败时返回原 URL

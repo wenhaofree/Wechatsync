@@ -19,7 +19,7 @@ export class ExtensionBridge {
     reject: (error: Error) => void
     timeout: NodeJS.Timeout
   }>()
-  private requestTimeout = 30000 // 30 seconds
+  private requestTimeout = 360000 // 6 minutes (图片多时需要更长时间)
 
   // 安全验证 token（从环境变量读取）
   private token: string = process.env.MCP_TOKEN || ''

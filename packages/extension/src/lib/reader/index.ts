@@ -136,18 +136,195 @@ function processLinks(container: HTMLElement): void {
 }
 
 /**
+ * KaTeX 备份信息
+ */
+interface KatexBackup {
+  element: Element
+  originalHTML: string
+}
+
+/**
+ * Unicode 希腊字母转 LaTeX 命令
+ * 某些渲染器（如 codecogs）需要标准 LaTeX 命令，不识别 Unicode 字符
+ */
+function unicodeToLatex(latex: string): string {
+  const greekMap: Record<string, string> = {
+    // 大写希腊字母
+    'Α': 'A', 'Β': 'B', 'Γ': '\\Gamma', 'Δ': '\\Delta',
+    'Ε': 'E', 'Ζ': 'Z', 'Η': 'H', 'Θ': '\\Theta',
+    'Ι': 'I', 'Κ': 'K', 'Λ': '\\Lambda', 'Μ': 'M',
+    'Ν': 'N', 'Ξ': '\\Xi', 'Ο': 'O', 'Π': '\\Pi',
+    'Ρ': 'P', 'Σ': '\\Sigma', 'Τ': 'T', 'Υ': '\\Upsilon',
+    'Φ': '\\Phi', 'Χ': 'X', 'Ψ': '\\Psi', 'Ω': '\\Omega',
+    // 小写希腊字母
+    'α': '\\alpha', 'β': '\\beta', 'γ': '\\gamma', 'δ': '\\delta',
+    'ε': '\\epsilon', 'ζ': '\\zeta', 'η': '\\eta', 'θ': '\\theta',
+    'ι': '\\iota', 'κ': '\\kappa', 'λ': '\\lambda', 'μ': '\\mu',
+    'ν': '\\nu', 'ξ': '\\xi', 'ο': 'o', 'π': '\\pi',
+    'ρ': '\\rho', 'σ': '\\sigma', 'τ': '\\tau', 'υ': '\\upsilon',
+    'φ': '\\phi', 'χ': '\\chi', 'ψ': '\\psi', 'ω': '\\omega',
+    // 变体
+    'ϕ': '\\varphi', 'ϵ': '\\varepsilon', 'ϑ': '\\vartheta',
+    'ϖ': '\\varpi', 'ϱ': '\\varrho', 'ς': '\\varsigma',
+  }
+
+  return latex.replace(/[Α-Ωα-ωϕϵϑϖϱς]/g, (char) => greekMap[char] || char)
+}
+
+/**
+ * 提取 LaTeX 内容
+ * 优先从 annotation 标签提取，回退到 katex-mathml textContent
+ */
+function extractLatex(container: Element): string | null {
+  let latex: string | null = null
+
+  // 优先从 annotation 标签提取（标准 KaTeX）
+  const annotation = container.querySelector('annotation[encoding="application/x-tex"]')
+  if (annotation?.textContent) {
+    latex = annotation.textContent.trim()
+  } else {
+    // 回退：从 katex-mathml 的 textContent 提取（CSDN 等无 annotation 的情况）
+    // textContent 结构通常是多行：前面是 MathML 分散字符，后面是完整 LaTeX
+    const mathml = container.querySelector('.katex-mathml')
+    if (mathml?.textContent) {
+      const text = mathml.textContent.trim()
+
+      // 按行分割，从后往前找包含 LaTeX 特殊字符的行
+      const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0)
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i]
+        // 找包含 \ 或 ^_ 的行（完整 LaTeX 公式）
+        if (line.includes('\\') || /[\^_{}]/.test(line)) {
+          latex = line
+          break
+        }
+      }
+
+      // 如果没找到，取最后一行
+      if (!latex && lines.length > 0) {
+        latex = lines[lines.length - 1]
+      }
+    }
+  }
+
+  // 转换 Unicode 希腊字母为 LaTeX 命令
+  return latex ? unicodeToLatex(latex) : null
+}
+
+/**
+ * 临时替换页面中的 KaTeX 为纯文本，返回备份以便恢复
+ * 这样 Reader 处理时 KaTeX 已经是纯文本，不会被破坏
+ */
+function backupAndReplaceKatex(): KatexBackup[] {
+  const backups: KatexBackup[] = []
+
+  // 处理块级公式 (.katex-display 或 .katex--display)
+  document.querySelectorAll('.katex-display, .katex--display').forEach((katexDisplay) => {
+    const latex = extractLatex(katexDisplay)
+    if (latex) {
+      backups.push({
+        element: katexDisplay,
+        originalHTML: katexDisplay.innerHTML,
+      })
+      katexDisplay.innerHTML = `$$${latex}$$`
+    }
+  })
+
+  // 处理 CSDN inline 公式 (.katex--inline) - 作为整体处理
+  document.querySelectorAll('.katex--inline').forEach((katexInline) => {
+    const latex = extractLatex(katexInline)
+    if (latex) {
+      backups.push({
+        element: katexInline,
+        originalHTML: katexInline.innerHTML,
+      })
+      katexInline.innerHTML = `$${latex}$`
+    }
+  })
+
+  // 处理行内公式 (.katex，排除上面已处理的)
+  document.querySelectorAll('.katex:not(.katex-display .katex):not(.katex--display .katex):not(.katex--inline .katex)').forEach((katex) => {
+    const latex = extractLatex(katex)
+    if (latex) {
+      backups.push({
+        element: katex,
+        originalHTML: katex.innerHTML,
+      })
+      katex.innerHTML = `$${latex}$`
+    }
+  })
+
+  return backups
+}
+
+/**
+ * 恢复页面中被替换的 KaTeX 元素
+ */
+function restoreKatex(backups: KatexBackup[]): void {
+  backups.forEach(({ element, originalHTML }) => {
+    element.innerHTML = originalHTML
+  })
+}
+
+/**
+ * 处理容器中的 KaTeX（用于克隆后的 DOM，如 Readability）
+ */
+function processKatex(container: HTMLElement): void {
+  // 处理块级公式 (.katex-display 或 .katex--display)
+  container.querySelectorAll('.katex-display, .katex--display').forEach((katexDisplay) => {
+    const latex = extractLatex(katexDisplay)
+    if (latex) {
+      const placeholder = document.createElement('div')
+      placeholder.className = 'latex-block'
+      placeholder.textContent = `$$${latex}$$`
+      katexDisplay.replaceWith(placeholder)
+    }
+  })
+
+  // 处理 CSDN inline 公式 (.katex--inline) - 作为整体处理
+  container.querySelectorAll('.katex--inline').forEach((katexInline) => {
+    const latex = extractLatex(katexInline)
+    if (latex) {
+      const placeholder = document.createElement('span')
+      placeholder.className = 'latex-inline'
+      placeholder.textContent = `$${latex}$`
+      katexInline.replaceWith(placeholder)
+    }
+  })
+
+  // 处理行内公式（排除上面已处理的）
+  container.querySelectorAll('.katex:not(.katex-display .katex):not(.katex--display .katex):not(.katex--inline .katex)').forEach((katex) => {
+    const latex = extractLatex(katex)
+    if (latex) {
+      const placeholder = document.createElement('span')
+      placeholder.className = 'latex-inline'
+      placeholder.textContent = `$${latex}$`
+      katex.replaceWith(placeholder)
+    }
+  })
+
+  // 清理残留的 katex-html
+  container.querySelectorAll('.katex-html').forEach((el) => el.remove())
+}
+
+/**
  * 使用 Safari ReaderArticleFinder 提取
  */
 function extractWithSafariReader(): ReaderResult | null {
+  // 临时替换页面中的 KaTeX 为纯文本（Reader 处理后会恢复）
+  const katexBackup = backupAndReplaceKatex()
+
   try {
     const reader = new ReaderArticleFinder(document)
 
     if (!reader.isReaderModeAvailable()) {
+      restoreKatex(katexBackup)
       return null
     }
 
     const articleNode = reader.adoptableArticle(true)
     if (!articleNode) {
+      restoreKatex(katexBackup)
       return null
     }
 
@@ -155,6 +332,9 @@ function extractWithSafariReader(): ReaderResult | null {
     const cloned = articleNode.cloneNode(true) as HTMLElement
     processLazyImages(cloned)
     processLinks(cloned)
+
+    // 恢复原始页面的 KaTeX
+    restoreKatex(katexBackup)
 
     return {
       title: reader.articleTitle() || document.title,
@@ -169,6 +349,8 @@ function extractWithSafariReader(): ReaderResult | null {
       extractor: 'safari-reader',
     }
   } catch (e) {
+    // 确保异常时也恢复页面
+    restoreKatex(katexBackup)
     logger.error('Safari ReaderArticleFinder error:', e)
     return null
   }
@@ -188,10 +370,11 @@ function extractWithReadability(): ReaderResult | null {
       return null
     }
 
-    // 处理内容中的图片
+    // 处理内容中的图片和公式
     const container = document.createElement('div')
     container.innerHTML = article.content
     processLazyImages(container)
+    processKatex(container)
     processLinks(container)
 
     // 获取首图
@@ -227,6 +410,7 @@ function extractWithArticleTag(): ReaderResult | null {
 
   const cloned = articleEl.cloneNode(true) as HTMLElement
   processLazyImages(cloned)
+  processKatex(cloned)
   processLinks(cloned)
 
   const firstImg = cloned.querySelector('img')

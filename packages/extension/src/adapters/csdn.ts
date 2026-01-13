@@ -221,13 +221,14 @@ export class CSDNAdapter extends CodeAdapter {
       const res = await response.json() as {
         code: number
         message?: string
+        msg?: string
         data?: { id: string }
       }
 
       logger.debug('Save response:', res)
 
       if (res.code !== 200 || !res.data?.id) {
-        throw new Error(res.message || '保存草稿失败')
+        throw new Error(res.msg || res.message || '保存草稿失败')
       }
 
       const postId = res.data.id

@@ -100,17 +100,40 @@ export function EditorApp() {
           }
         } else if (data.type === 'PLATFORMS_DATA') {
           setPlatforms(data.platforms)
-          // 使用传递的已选中平台，如果没有则默认选中所有已登录平台
-          let selected: string[]
+          // 使用传递的已选中平台，如果没有则从 storage 读取
           if (data.selectedPlatformIds && data.selectedPlatformIds.length > 0) {
-            selected = data.selectedPlatformIds
+            setSelectedPlatforms(new Set(data.selectedPlatformIds))
+            saveSelectedPlatforms(data.selectedPlatformIds)
           } else {
-            const authenticated = data.platforms.filter((p: Platform) => p.isAuthenticated)
-            selected = authenticated.map((p: Platform) => p.id)
+            // 从 storage 读取上次选中的平台
+            chrome.storage.local.get(SELECTED_PLATFORMS_KEY).then((result) => {
+              const storedPlatforms = result[SELECTED_PLATFORMS_KEY] as string[] | undefined
+              const authenticated = data.platforms.filter((p: Platform) => p.isAuthenticated)
+              const authenticatedIds = authenticated.map((p: Platform) => p.id)
+              const authenticatedSet = new Set(authenticatedIds)
+
+              let selected: string[]
+              if (storedPlatforms && storedPlatforms.length > 0) {
+                // 过滤掉未登录的平台
+                selected = storedPlatforms.filter(id => authenticatedSet.has(id))
+              } else {
+                // 默认选中所有已登录平台
+                selected = authenticatedIds
+              }
+
+              if (selected.length === 0) {
+                // 如果过滤后为空，选中所有已登录平台
+                selected = authenticatedIds
+              }
+
+              setSelectedPlatforms(new Set(selected))
+            }).catch((e) => {
+              logger.error('Failed to load selected platforms:', e)
+              // 失败时默认选中所有已登录平台
+              const authenticated = data.platforms.filter((p: Platform) => p.isAuthenticated)
+              setSelectedPlatforms(new Set(authenticated.map((p: Platform) => p.id)))
+            })
           }
-          setSelectedPlatforms(new Set(selected))
-          // 保存到 storage，确保与 popup 同步
-          saveSelectedPlatforms(selected)
         } else if (data.type === 'SYNC_PROGRESS') {
           if (data.result) {
             setResults(prev => [...prev, data.result])
@@ -299,6 +322,17 @@ export function EditorApp() {
                 <span className="text-sm text-gray-500">
                   {successCount} 成功 / {failedCount} 失败
                 </span>
+                <button
+                  onClick={() => {
+                    setStatus('idle')
+                    setResults([])
+                    setPlatformProgress(new Map())
+                    setCurrentSyncId(null)
+                  }}
+                  className="px-4 py-2 rounded-lg bg-green-500 text-white hover:bg-green-600"
+                >
+                  完成
+                </button>
               </div>
             )}
 

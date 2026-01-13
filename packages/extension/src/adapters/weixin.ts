@@ -32,19 +32,22 @@ p {
   color: rgb(51, 51, 51);
   font-size: 15px;
   line-height: 1.75em;
-  margin: 1.12em 0;
+  margin: 0 0 1em 0;
 }
 h1, h2, h3, h4, h5, h6 {
   font-weight: bold;
 }
-h1 { font-size: 1.25em; line-height: 1.4em; }
-h2 { font-size: 1.125em; }
-h3 { font-size: 1.05em; }
-h4, h5, h6 { font-size: 1em; margin: 1em 0; }
+h1 { font-size: 1.25em; line-height: 1.4em; margin: 1em 0 0.5em 0; }
+h2 { font-size: 1.125em; margin: 1em 0 0.5em 0; }
+h3 { font-size: 1.05em; margin: 0.8em 0 0.4em 0; }
+h4, h5, h6 { font-size: 1em; margin: 0.8em 0 0.4em 0; }
 li p { margin: 0; }
+ul, ol { margin: 1em 0; padding-left: 2em; }
+li { margin-bottom: 0.4em; }
 pre, tt, code, kbd, samp { font-family: monospace; }
-pre { white-space: pre; }
-blockquote { margin-left: 40px; margin-right: 40px; }
+pre { white-space: pre; margin: 1em 0; }
+blockquote { border-left: 4px solid #ddd; padding-left: 1em; margin: 1em 0; color: #666; }
+hr { border: none; border-top: 1px solid #ddd; margin: 1.5em 0; }
 i, cite, em, var, address { font-style: italic; }
 b, strong { font-weight: bolder; }
 `
@@ -145,7 +148,10 @@ export class WeixinAdapter extends CodeAdapter {
         removeAttrs: ['data-reader-unique-id', '_src'],
       })
 
-      // 4. 处理图片
+      // 4. 处理 LaTeX 公式（转成图片，放在图片处理之前）
+      content = this.processLatex(content)
+
+      // 5. 处理图片（包括 LaTeX 生成的图片）
       content = await this.processImages(
         content,
         (src) => this.uploadImageByUrl(src),
@@ -155,7 +161,7 @@ export class WeixinAdapter extends CodeAdapter {
         }
       )
 
-      // 5. 处理内容格式（内联 CSS）
+      // 6. 处理内容格式（内联 CSS）
       content = this.processContent(content)
 
       // 6. 创建草稿
@@ -178,7 +184,7 @@ export class WeixinAdapter extends CodeAdapter {
         author0: '',
         writerid0: '0',
         fileid0: '',
-        digest0: article.summary || article.title,
+        digest0: '',
         auto_gen_digest0: '1',
         content0: content,
         sourceurl0: '',
@@ -320,6 +326,45 @@ export class WeixinAdapter extends CodeAdapter {
     return {
       url: res.cdn_url,
     }
+  }
+
+  /**
+   * 检查内容是否是 LaTeX 公式（而非货币符号等）
+   * LaTeX 公式通常包含: \ ^ _ { } 或希腊字母等
+   */
+  private isLatexFormula(text: string): boolean {
+    // 包含 LaTeX 命令字符
+    if (/[\\^_{}]/.test(text)) return true
+    // 包含希腊字母 (Unicode)
+    if (/[α-ωΑ-Ω]/.test(text)) return true
+    // 包含常见数学符号
+    if (/[∑∏∫∂∇∞≠≤≥±×÷√]/.test(text)) return true
+    return false
+  }
+
+  /**
+   * 处理 LaTeX 公式，转换为图片
+   * 微信公众号不支持 JS 渲染，需要用图片展示公式
+   * 使用 PNG 格式（SVG 会被 cleanHtml 清理）
+   */
+  private processLatex(content: string): string {
+    const LATEX_API = 'https://latex.codecogs.com/png.latex'
+
+    // 块级公式 $$...$$ 转成居中图片
+    content = content.replace(/\$\$([^$]+)\$\$/g, (match, latex) => {
+      if (!this.isLatexFormula(latex)) return match // 不是 LaTeX，保持原样
+      const encoded = encodeURIComponent(latex.trim())
+      return `<p style="text-align: center;"><img src="${LATEX_API}?\\dpi{150}${encoded}" alt="formula" style="vertical-align: middle; max-width: 100%;"></p>`
+    })
+
+    // 行内公式 $...$ 转成内联图片
+    content = content.replace(/\$([^$]+)\$/g, (match, latex) => {
+      if (!this.isLatexFormula(latex)) return match // 不是 LaTeX，保持原样
+      const encoded = encodeURIComponent(latex.trim())
+      return `<img src="${LATEX_API}?\\dpi{120}${encoded}" alt="formula" style="vertical-align: middle;">`
+    })
+
+    return content
   }
 
   /**
