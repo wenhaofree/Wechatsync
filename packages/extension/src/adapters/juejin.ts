@@ -4,8 +4,93 @@
 import { CodeAdapter, type ImageUploadResult, htmlToMarkdown } from '@wechatsync/core'
 import type { Article, AuthResult, SyncResult, PlatformMeta, PublishOptions } from '@wechatsync/core'
 import { createLogger } from '../lib/logger'
+import { signAWS4, crc32 } from '../lib/aws4'
 
 const logger = createLogger('Juejin')
+
+// ImageX 服务常量
+const IMAGEX_AID = '2608'
+const IMAGEX_SERVICE_ID = '73owjymdk6'
+
+// 生成 UUID (用于 ImageX API)
+function generateUUID(): string {
+  return 'xxxxxxxxxxxxxxxx'.replace(/x/g, () =>
+    Math.floor(Math.random() * 16).toString(16)
+  ) + Date.now().toString()
+}
+
+// ImageX Token 响应类型
+interface ImageXTokenResponse {
+  data?: {
+    token: {
+      AccessKeyId: string
+      SecretAccessKey: string
+      SessionToken: string
+      ExpiredTime: string  // ISO 日期字符串 "2026-01-14T00:15:24+08:00"
+      CurrentTime: string
+    }
+  }
+  err_no?: number
+  err_msg?: string
+}
+
+// 解析后的 Token
+interface ImageXToken {
+  AccessKeyId: string
+  SecretAccessKey: string
+  SessionToken: string
+  ExpiredTime: number  // Unix 时间戳（毫秒）
+}
+
+// ImageX ApplyUpload 响应类型
+interface ImageXApplyUploadResponse {
+  ResponseMetadata: {
+    RequestId: string
+    Action: string
+    Version: string
+    Service: string
+    Region: string
+  }
+  Result: {
+    RequestId: string
+    UploadAddress: {
+      StoreInfos: Array<{
+        StoreUri: string
+        Auth: string
+        UploadID: string
+      }>
+      UploadHosts: string[]
+      SessionKey: string
+    }
+  }
+}
+
+// ImageX CommitUpload 响应类型
+interface ImageXCommitUploadResponse {
+  ResponseMetadata: {
+    RequestId: string
+    Action: string
+    Version: string
+    Service: string
+    Region: string
+  }
+  Result: {
+    RequestId: string
+    Results: Array<{
+      Uri: string
+      UriStatus: number
+    }>
+    PluginResult: Array<{
+      FileName: string
+      ImageUri: string
+      ImageWidth: number
+      ImageHeight: number
+      ImageMd5: string
+      ImageFormat: string
+      ImageSize: number
+    }>
+  }
+}
 
 export class JuejinAdapter extends CodeAdapter {
   readonly meta: PlatformMeta = {
@@ -17,6 +102,54 @@ export class JuejinAdapter extends CodeAdapter {
   }
 
   private cachedCsrfToken: string | null = null
+  private cachedImageXToken: ImageXToken | null = null
+  private imageXTokenExpiry: number = 0
+  private uuid: string = generateUUID()
+  private headerRuleIds: string[] = []
+
+  /**
+   * 设置动态请求头规则
+   */
+  private async setupHeaderRules(): Promise<void> {
+    if (this.headerRuleIds.length > 0) return
+    if (!this.runtime.headerRules) return
+
+    // 添加 api.juejin.cn 规则
+    const ruleId1 = await this.runtime.headerRules.add({
+      urlFilter: '*://api.juejin.cn/*',
+      headers: {
+        'Origin': 'https://juejin.cn',
+        'Referer': 'https://juejin.cn/',
+      },
+      resourceTypes: ['xmlhttprequest'],
+    })
+    this.headerRuleIds.push(ruleId1)
+
+    // 添加 imagex.bytedanceapi.com 规则
+    const ruleId2 = await this.runtime.headerRules.add({
+      urlFilter: '*://imagex.bytedanceapi.com/*',
+      headers: {
+        'Origin': 'https://juejin.cn',
+        'Referer': 'https://juejin.cn/',
+      },
+      resourceTypes: ['xmlhttprequest'],
+    })
+    this.headerRuleIds.push(ruleId2)
+
+    logger.debug('Header rules added:', this.headerRuleIds)
+  }
+
+  /**
+   * 清除动态请求头规则
+   */
+  private async clearHeaderRules(): Promise<void> {
+    if (!this.runtime.headerRules) return
+    for (const ruleId of this.headerRuleIds) {
+      await this.runtime.headerRules.remove(ruleId)
+    }
+    this.headerRuleIds = []
+    logger.debug('Header rules cleared')
+  }
 
   async checkAuth(): Promise<AuthResult> {
     try {
@@ -85,6 +218,9 @@ export class JuejinAdapter extends CodeAdapter {
   }
 
   async publish(article: Article, options?: PublishOptions): Promise<SyncResult> {
+    // 设置请求头规则
+    await this.setupHeaderRules()
+
     try {
       logger.info('Starting publish...')
 
@@ -171,12 +307,18 @@ export class JuejinAdapter extends CodeAdapter {
 
       const draftUrl = `https://juejin.cn/editor/drafts/${draftId}`
 
-      return this.createResult(true, {
+      const result = this.createResult(true, {
         postId: draftId,
         postUrl: draftUrl,
         draftOnly: options?.draftOnly ?? true,
       })
+
+      // 清除请求头规则
+      await this.clearHeaderRules()
+      return result
     } catch (error) {
+      // 清除请求头规则
+      await this.clearHeaderRules()
       return this.createResult(false, {
         error: (error as Error).message,
       })
@@ -185,56 +327,48 @@ export class JuejinAdapter extends CodeAdapter {
 
   /**
    * 通过 Blob 上传图片（覆盖基类方法）
+   * 需要设置动态请求头规则以支持 MCP 调用
    */
   async uploadImage(file: Blob, _filename?: string): Promise<string> {
-    return this.uploadImageBinaryInternal(file)
+    await this.setupHeaderRules()
+    try {
+      return await this.uploadImageBinaryInternal(file)
+    } finally {
+      await this.clearHeaderRules()
+    }
   }
 
   /**
    * 通过 URL 上传图片
-   * 支持远程 URL 和 data URI
+   * 支持远程 URL 和 data URI，都使用 ImageX 流程
    */
   protected async uploadImageByUrl(src: string): Promise<ImageUploadResult> {
     try {
-      // 检测 data URI，使用二进制上传
+      let blob: Blob
+
       if (src.startsWith('data:')) {
-        logger.debug('Detected data URI, using binary upload')
-        const blob = await fetch(src).then(r => r.blob())
-        const url = await this.uploadImageBinaryInternal(blob)
-        return { url }
+        // data URI 直接转 blob
+        logger.debug('Detected data URI, converting to blob')
+        blob = await fetch(src).then(r => r.blob())
+      } else {
+        // 远程 URL：先下载再上传
+        logger.debug('Downloading remote image:', src.substring(0, 80))
+        const response = await this.runtime.fetch(src, {
+          method: 'GET',
+        })
+
+        if (!response.ok) {
+          logger.warn('Failed to download image:', response.status)
+          return { url: src }
+        }
+
+        blob = await response.blob()
       }
 
-      // 远程 URL 使用掘金 URL 上传 API
-      const response = await this.runtime.fetch('https://juejin.cn/image/urlSave', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ url: src }),
-        credentials: 'include',
-      })
-
-      const data = await response.json() as {
-        data?: string
-        message?: string
-        err_msg?: string
-        err_no?: number
-      }
-
-      // 检查错误
-      if (data.err_no && data.err_no !== 0) {
-        logger.warn('Upload failed:', data.err_msg || data.message)
-        return { url: src } // 失败时返回原 URL
-      }
-
-      if (data.data) {
-        logger.debug('Uploaded image by URL:', src.substring(0, 50), '->', data.data)
-        return { url: data.data }
-      }
-
-      // 无数据返回原 URL
-      logger.warn('Upload returned no data')
-      return { url: src }
+      // 使用 ImageX 流程上传
+      const url = await this.uploadImageBinaryInternal(blob)
+      logger.debug('Uploaded image:', src.substring(0, 50), '->', url)
+      return { url }
     } catch (error) {
       logger.warn('Failed to upload image by URL:', src, error)
       return { url: src } // 失败时返回原 URL
@@ -242,33 +376,231 @@ export class JuejinAdapter extends CodeAdapter {
   }
 
   /**
-   * 上传图片 (二进制方式) - 内部使用
+   * 获取 ImageX 上传凭证
    */
-  private async uploadImageBinaryInternal(file: Blob): Promise<string> {
-    const csrfToken = await this.getCsrfToken()
+  private async getImageXToken(): Promise<ImageXToken> {
+    // 检查缓存是否有效（提前 60 秒过期）
+    if (this.cachedImageXToken && Date.now() < this.imageXTokenExpiry - 60000) {
+      return this.cachedImageXToken
+    }
 
-    const formData = new FormData()
-    formData.append('file', file)
+    const url = `https://api.juejin.cn/imagex/v2/gen_token?aid=${IMAGEX_AID}&uuid=${this.uuid}&client=web`
+    const response = await this.runtime.fetch(url, {
+      method: 'GET',
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    })
 
-    const response = await this.runtime.fetch('https://api.juejin.cn/content_api/v1/upload/image', {
+    const responseText = await response.text()
+    logger.debug('gen_token response:', responseText.substring(0, 500))
+
+    let data: ImageXTokenResponse
+    try {
+      data = JSON.parse(responseText)
+    } catch {
+      throw new Error(`Invalid JSON response from gen_token: ${responseText.substring(0, 200)}`)
+    }
+
+    if (data.err_no && data.err_no !== 0) {
+      throw new Error(data.err_msg || `Failed to get ImageX token: err_no=${data.err_no}`)
+    }
+
+    const tokenData = data.data?.token
+    if (!tokenData || !tokenData.AccessKeyId || !tokenData.SecretAccessKey) {
+      throw new Error(`Invalid ImageX token response: ${responseText.substring(0, 200)}`)
+    }
+
+    // 解析 ISO 日期为时间戳
+    const expiredTime = new Date(tokenData.ExpiredTime).getTime()
+
+    this.cachedImageXToken = {
+      AccessKeyId: tokenData.AccessKeyId,
+      SecretAccessKey: tokenData.SecretAccessKey,
+      SessionToken: tokenData.SessionToken,
+      ExpiredTime: expiredTime,
+    }
+    this.imageXTokenExpiry = expiredTime
+
+    logger.debug('Got ImageX token, expires at:', tokenData.ExpiredTime)
+
+    return this.cachedImageXToken
+  }
+
+  /**
+   * 申请图片上传
+   */
+  private async applyImageUpload(token: ImageXToken): Promise<ImageXApplyUploadResponse['Result']['UploadAddress']> {
+    const url = `https://imagex.bytedanceapi.com/?Action=ApplyImageUpload&Version=2018-08-01&ServiceId=${IMAGEX_SERVICE_ID}`
+
+    // 生成 AWS4 签名
+    const signResult = await signAWS4({
+      method: 'GET',
+      url,
+      accessKeyId: token.AccessKeyId,
+      secretAccessKey: token.SecretAccessKey,
+      securityToken: token.SessionToken,
+      region: 'cn-north-1',
+      service: 'imagex',
+    })
+
+    const response = await this.runtime.fetch(url, {
+      method: 'GET',
+      headers: {
+        ...signResult.headers,
+      },
+    })
+
+    const data = await response.json() as ImageXApplyUploadResponse
+
+    if (!data.Result?.UploadAddress) {
+      throw new Error('Failed to apply image upload')
+    }
+
+    return data.Result.UploadAddress
+  }
+
+  /**
+   * 上传文件到 TOS
+   */
+  private async uploadToTOS(
+    uploadAddress: ImageXApplyUploadResponse['Result']['UploadAddress'],
+    file: Blob
+  ): Promise<void> {
+    const storeInfo = uploadAddress.StoreInfos[0]
+    const uploadHost = uploadAddress.UploadHosts[0]
+
+    if (!storeInfo || !uploadHost) {
+      throw new Error('Invalid upload address')
+    }
+
+    // 构建上传 URL
+    const uploadUrl = `https://${uploadHost}/${storeInfo.StoreUri}`
+
+    // 计算 CRC32
+    const arrayBuffer = await file.arrayBuffer()
+    const uint8Array = new Uint8Array(arrayBuffer)
+    const crc32Value = crc32(uint8Array)
+
+    logger.debug('Uploading to TOS:', uploadUrl, 'size:', file.size, 'crc32:', crc32Value)
+
+    // 上传文件
+    const response = await this.runtime.fetch(uploadUrl, {
+      method: 'PUT',
+      headers: {
+        'Authorization': storeInfo.Auth,
+        'Content-Type': file.type || 'application/octet-stream',
+        'Content-CRC32': crc32Value,
+      },
+      body: file,
+    })
+
+    if (!response.ok) {
+      const text = await response.text()
+      throw new Error(`TOS upload failed: ${response.status} ${text}`)
+    }
+
+    logger.debug('TOS upload success')
+  }
+
+  /**
+   * 提交图片上传
+   */
+  private async commitImageUpload(
+    token: ImageXToken,
+    sessionKey: string
+  ): Promise<ImageXCommitUploadResponse['Result']> {
+    const url = `https://imagex.bytedanceapi.com/?Action=CommitImageUpload&Version=2018-08-01&SessionKey=${encodeURIComponent(sessionKey)}&ServiceId=${IMAGEX_SERVICE_ID}`
+
+    // 生成 AWS4 签名
+    const signResult = await signAWS4({
+      method: 'POST',
+      url,
+      accessKeyId: token.AccessKeyId,
+      secretAccessKey: token.SecretAccessKey,
+      securityToken: token.SessionToken,
+      region: 'cn-north-1',
+      service: 'imagex',
+    })
+
+    const response = await this.runtime.fetch(url, {
       method: 'POST',
       headers: {
-        'x-secsdk-csrf-token': csrfToken,
+        ...signResult.headers,
+        'Content-Length': '0',
       },
-      body: formData,
+    })
+
+    const data = await response.json() as ImageXCommitUploadResponse
+
+    if (!data.Result) {
+      throw new Error('Failed to commit image upload')
+    }
+
+    return data.Result
+  }
+
+  /**
+   * 获取图片 URL
+   */
+  private async getImageUrl(uri: string): Promise<string> {
+    const url = `https://api.juejin.cn/imagex/v2/get_img_url?aid=${IMAGEX_AID}&uuid=${this.uuid}&uri=${encodeURIComponent(uri)}&img_type=private`
+
+    const response = await this.runtime.fetch(url, {
+      method: 'GET',
       credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+      },
     })
 
     const data = await response.json() as {
-      data?: { url?: string }
+      data?: { main_url?: string; backup_url?: string }
+      err_no?: number
       err_msg?: string
     }
 
-    if (!data.data?.url) {
-      throw new Error(data.err_msg || 'Failed to upload image')
+    if (data.err_no && data.err_no !== 0) {
+      throw new Error(data.err_msg || 'Failed to get image URL')
     }
 
-    return data.data.url
+    const imageUrl = data.data?.main_url || data.data?.backup_url
+    if (!imageUrl) {
+      throw new Error('Invalid image URL response')
+    }
+
+    return imageUrl
+  }
+
+  /**
+   * 上传图片 (ImageX 方式) - 内部使用
+   */
+  private async uploadImageBinaryInternal(file: Blob): Promise<string> {
+    // 1. 获取上传凭证
+    const token = await this.getImageXToken()
+
+    // 2. 申请上传
+    const uploadAddress = await this.applyImageUpload(token)
+    logger.debug('Apply upload success, session:', uploadAddress.SessionKey.substring(0, 50) + '...')
+
+    // 3. 上传到 TOS
+    await this.uploadToTOS(uploadAddress, file)
+
+    // 4. 提交上传
+    const commitResult = await this.commitImageUpload(token, uploadAddress.SessionKey)
+    logger.debug('Commit upload success:', commitResult.Results?.[0]?.Uri)
+
+    // 5. 获取图片 URL
+    const storeUri = uploadAddress.StoreInfos[0]?.StoreUri
+    if (!storeUri) {
+      throw new Error('No store URI in upload address')
+    }
+
+    const imageUrl = await this.getImageUrl(storeUri)
+    logger.debug('Got image URL:', imageUrl)
+
+    return imageUrl
   }
 
   /**

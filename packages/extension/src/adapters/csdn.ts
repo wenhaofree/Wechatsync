@@ -24,10 +24,66 @@ export class CSDNAdapter extends CodeAdapter {
   }
 
   private userInfo: CSDNUserInfo | null = null
+  private headerRuleIds: string[] = []
 
   // CSDN API 签名密钥
   private readonly API_KEY = '203803574'
   private readonly API_SECRET = '9znpamsyl2c7cdrr9sas0le9vbc3r6ba'
+
+  /**
+   * 设置动态请求头规则
+   */
+  private async setupHeaderRules(): Promise<void> {
+    if (this.headerRuleIds.length > 0) return
+    if (!this.runtime.headerRules) return
+
+    // bizapi.csdn.net
+    const ruleId1 = await this.runtime.headerRules.add({
+      urlFilter: '*://bizapi.csdn.net/*',
+      headers: {
+        'Origin': 'https://editor.csdn.net',
+        'Referer': 'https://editor.csdn.net/',
+      },
+      resourceTypes: ['xmlhttprequest'],
+    })
+    this.headerRuleIds.push(ruleId1)
+
+    // imgservice.csdn.net
+    const ruleId2 = await this.runtime.headerRules.add({
+      urlFilter: '*://imgservice.csdn.net/*',
+      headers: {
+        'Origin': 'https://editor.csdn.net',
+        'Referer': 'https://editor.csdn.net/',
+      },
+      resourceTypes: ['xmlhttprequest'],
+    })
+    this.headerRuleIds.push(ruleId2)
+
+    // 华为云 OBS
+    const ruleId3 = await this.runtime.headerRules.add({
+      urlFilter: '*://csdn-img-blog.obs.cn-north-4.myhuaweicloud.com/*',
+      headers: {
+        'Origin': 'https://editor.csdn.net',
+        'Referer': 'https://editor.csdn.net/',
+      },
+      resourceTypes: ['xmlhttprequest'],
+    })
+    this.headerRuleIds.push(ruleId3)
+
+    logger.debug('Header rules added:', this.headerRuleIds)
+  }
+
+  /**
+   * 清除动态请求头规则
+   */
+  private async clearHeaderRules(): Promise<void> {
+    if (!this.runtime.headerRules) return
+    for (const ruleId of this.headerRuleIds) {
+      await this.runtime.headerRules.remove(ruleId)
+    }
+    this.headerRuleIds = []
+    logger.debug('Header rules cleared')
+  }
 
   async checkAuth(): Promise<AuthResult> {
     try {
@@ -148,6 +204,9 @@ export class CSDNAdapter extends CodeAdapter {
   }
 
   async publish(article: Article, options?: PublishOptions): Promise<SyncResult> {
+    // 设置请求头规则
+    await this.setupHeaderRules()
+
     try {
       logger.info('Starting publish...')
 
@@ -234,15 +293,42 @@ export class CSDNAdapter extends CodeAdapter {
       const postId = res.data.id
       const draftUrl = `https://editor.csdn.net/md?articleId=${postId}`
 
-      return this.createResult(true, {
+      const result = this.createResult(true, {
         postId: postId,
         postUrl: draftUrl,
         draftOnly: options?.draftOnly ?? true,
       })
+
+      // 清除请求头规则
+      await this.clearHeaderRules()
+      return result
     } catch (error) {
+      // 清除请求头规则
+      await this.clearHeaderRules()
       return this.createResult(false, {
         error: (error as Error).message,
       })
+    }
+  }
+
+  /**
+   * 通过 Blob 上传图片（覆盖基类方法）
+   * 需要设置动态请求头规则以支持 MCP 调用
+   */
+  async uploadImage(file: Blob, _filename?: string): Promise<string> {
+    await this.setupHeaderRules()
+    try {
+      // 转为 data URI 然后调用 uploadImageByUrl
+      const dataUri = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(reader.result as string)
+        reader.onerror = reject
+        reader.readAsDataURL(file)
+      })
+      const result = await this.uploadImageByUrl(dataUri)
+      return result.url
+    } finally {
+      await this.clearHeaderRules()
     }
   }
 
