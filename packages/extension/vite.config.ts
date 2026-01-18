@@ -89,6 +89,7 @@ export default defineConfig(({ mode }) => {
   resolve: {
     alias: {
       '@': resolve(__dirname, 'src'),
+      '@wechatsync/core': resolve(__dirname, '../core/src'),
     },
   },
   build: {

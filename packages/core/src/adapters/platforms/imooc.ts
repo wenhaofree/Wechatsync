@@ -112,7 +112,13 @@ export class ImoocAdapter extends CodeAdapter {
       throw new Error(res.msg || '图片上传失败')
     }
 
-    return { url: res.data.imgpath }
+    // 处理协议相对 URL
+    let imgUrl = res.data.imgpath
+    if (imgUrl.startsWith('//')) {
+      imgUrl = 'https:' + imgUrl
+    }
+
+    return { url: imgUrl }
   }
 
   /**
@@ -123,12 +129,9 @@ export class ImoocAdapter extends CodeAdapter {
     try {
       await this.addHeaderRules()
 
-      // 处理图片
-      let content = article.html || article.markdown || ''
+      // 优先使用 markdown，处理图片
+      let content = article.markdown || article.html || ''
       content = await this.processImages(content, (src) => this.uploadImageByUrl(src))
-
-      // 慕课网支持 markdown，优先使用
-      const markdown = article.markdown || content
 
       const response = await this.runtime.fetch('https://www.imooc.com/article/savedraft', {
         method: 'POST',
@@ -140,7 +143,7 @@ export class ImoocAdapter extends CodeAdapter {
           editor: '0',
           draft_id: '0',
           title: article.title,
-          content: markdown,
+          content: content,
         }),
       })
 

@@ -8,7 +8,7 @@ export class SegmentfaultAdapter extends CodeAdapter {
   meta: PlatformMeta = {
     id: 'segmentfault',
     name: '思否',
-    icon: 'https://segmentfault.com/favicon.ico',
+    icon: 'https://imgcache.iyiou.com/Company/2016-05-11/cf-segmentfault.jpg',
     homepage: 'https://segmentfault.com/user/draft',
     capabilities: ['article', 'draft', 'image_upload'],
   }
@@ -23,7 +23,7 @@ export class SegmentfaultAdapter extends CodeAdapter {
     if (!this.runtime.headerRules) return
 
     this.headerRuleId = await this.runtime.headerRules.add({
-      urlFilter: '*://gateway.segmentfault.com/*',
+      urlFilter: '*://segmentfault.com/gateway/*',
       headers: {
         Origin: 'https://segmentfault.com',
         Referer: 'https://segmentfault.com/',
@@ -53,21 +53,16 @@ export class SegmentfaultAdapter extends CodeAdapter {
       })
       const html = await response.text()
 
-      // 使用正则解析用户头像和 ID (Service Worker 无法使用 DOMParser)
-      // 匹配 class="user-avatar" 的元素，提取 href 和 style
-      const avatarLinkMatch = html.match(/class="[^"]*user-avatar[^"]*"[^>]*href="([^"]+)"[^>]*style="([^"]*)"/i)
-        || html.match(/href="([^"]+)"[^>]*class="[^"]*user-avatar[^"]*"[^>]*style="([^"]*)"/i)
-
-      if (!avatarLinkMatch) {
+      // 匹配用户链接 href="/u/username"
+      const userLinkMatch = html.match(/href="\/u\/([^"]+)"/)
+      if (!userLinkMatch) {
         return { isAuthenticated: false, error: '未登录' }
       }
 
-      const href = avatarLinkMatch[1] || ''
-      const uid = href.split('/').pop() || ''
+      const uid = userLinkMatch[1]
 
-      // 提取头像 URL (background-image: url("..."))
-      const style = avatarLinkMatch[2] || ''
-      const avatarMatch = style.match(/url\(&quot;([^&]+)&quot;\)/) || style.match(/url\("([^"]+)"\)/)
+      // 匹配头像 URL (avatar-static.segmentfault.com)
+      const avatarMatch = html.match(/src="(https:\/\/avatar-static\.segmentfault\.com\/[^"]+)"/)
       const avatar = avatarMatch ? avatarMatch[1] : undefined
 
       return {
@@ -90,13 +85,19 @@ export class SegmentfaultAdapter extends CodeAdapter {
     })
     const html = await response.text()
 
+    // 新版 token 格式: serverData":{"Token":"xxx"
+    const tokenMatch = html.match(/serverData":\s*\{\s*"Token"\s*:\s*"([^"]+)"/)
+    if (tokenMatch) {
+      return tokenMatch[1]
+    }
+
+    // 兼容旧版格式
     const markStr = 'window.g_initialProps = '
     const authIndex = html.indexOf(markStr)
     if (authIndex === -1) {
       throw new Error('获取 session token 失败')
     }
 
-    // 提取 JSON 配置
     const endIndex = html.indexOf(';\n\t</script>', authIndex)
     if (endIndex === -1) {
       throw new Error('解析 session token 失败')
@@ -120,6 +121,10 @@ export class SegmentfaultAdapter extends CodeAdapter {
    * 上传图片
    */
   async uploadImageByUrl(url: string): Promise<ImageUploadResult> {
+    if (!this.sessionToken) {
+      throw new Error('未获取 token')
+    }
+
     // 下载图片
     const imageResponse = await this.runtime.fetch(url)
     const blob = await imageResponse.blob()
@@ -129,24 +134,46 @@ export class SegmentfaultAdapter extends CodeAdapter {
     formData.append('image', blob)
 
     const response = await this.runtime.fetch(
-      'https://segmentfault.com/img/upload/image',
+      'https://segmentfault.com/gateway/image',
       {
         method: 'POST',
         credentials: 'include',
+        headers: {
+          token: this.sessionToken,
+        },
         body: formData,
       }
     )
 
-    const res = await response.json()
-
-    // 返回格式: [0, url, id] 或 [1, error_message]
-    if (res[0] === 1) {
-      throw new Error(res[1] || '图片上传失败')
+    // 处理异常响应
+    const text = await response.text()
+    if (text === 'Unauthorized' || text.includes('禁言') || text.includes('锁定')) {
+      throw new Error(text === 'Unauthorized' ? '未授权' : text)
     }
 
-    // res[2] 是图片 ID
-    const imageUrl = res[1] || `https://image-static.segmentfault.com/${res[2]}`
-    return { url: imageUrl }
+    let res
+    try {
+      res = JSON.parse(text)
+    } catch {
+      throw new Error('图片上传失败: ' + text)
+    }
+
+    // FIXED_2024_SEGMENTFAULT_NEW_FORMAT
+    // 新版返回格式: { url: "/img/xxx", result: "https://image-static.segmentfault.com/xxx" }
+    // 旧版返回格式: [0, url, id] 或 [1, error_message]
+    if (res.result) {
+      return { url: res.result }
+    }
+
+    if (Array.isArray(res)) {
+      if (res[0] === 1) {
+        throw new Error(res[1] || '图片上传失败')
+      }
+      const imageUrl = res[1] || `https://image-static.segmentfault.com/${res[2]}`
+      return { url: imageUrl }
+    }
+
+    throw new Error('图片上传失败: 未知响应格式')
   }
 
   /**
@@ -160,22 +187,19 @@ export class SegmentfaultAdapter extends CodeAdapter {
       // 获取 session token
       this.sessionToken = await this.getSessionToken()
 
-      // 处理图片
-      let content = article.html || article.markdown || ''
+      // 优先使用 markdown，处理图片
+      let content = article.markdown || article.html || ''
       content = await this.processImages(content, (src) => this.uploadImageByUrl(src))
-
-      // 思否支持 markdown，优先使用
-      const markdown = article.markdown || content
 
       const postData = {
         title: article.title,
         tags: [],
-        text: markdown,
+        text: content,
         object_id: '',
         type: 'article',
       }
 
-      const response = await this.runtime.fetch('https://gateway.segmentfault.com/draft', {
+      const response = await this.runtime.fetch('https://segmentfault.com/gateway/draft', {
         method: 'POST',
         credentials: 'include',
         headers: {
@@ -186,11 +210,44 @@ export class SegmentfaultAdapter extends CodeAdapter {
         body: JSON.stringify(postData),
       })
 
-      const res = await response.json()
+      // 处理异常响应
+      const text = await response.text()
+      if (text === 'Unauthorized' || text.includes('禁言') || text.includes('锁定')) {
+        throw new Error(text === 'Unauthorized' ? '未授权' : text)
+      }
+
+      let res
+      try {
+        res = JSON.parse(text)
+      } catch {
+        throw new Error('发布失败: ' + text)
+      }
+
       await this.removeHeaderRules()
 
+      // 处理数组格式响应 [1, "error_message"]
+      if (Array.isArray(res)) {
+        if (res[0] === 1) {
+          throw new Error(res[1] || '发布失败')
+        }
+        // [0, data] 成功格式
+        const data = res[1]
+        if (data?.id) {
+          return {
+            platform: this.meta.id,
+            success: true,
+            postId: data.id,
+            postUrl: `https://segmentfault.com/write?draftId=${data.id}`,
+            draftOnly: true,
+            timestamp: now,
+          }
+        }
+      }
+
       if (!res.id) {
-        throw new Error('发布失败')
+        // 尝试多种错误字段
+        const errorMsg = res.message || res.msg || res.error || res.errMsg || JSON.stringify(res)
+        throw new Error(errorMsg)
       }
 
       return {

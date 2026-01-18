@@ -150,12 +150,9 @@ export class OschinaAdapter extends CodeAdapter {
       // 获取 user token
       const userToken = await this.getUserToken()
 
-      // 处理图片
-      let content = article.html || article.markdown || ''
+      // 优先使用 markdown，处理图片
+      let content = article.markdown || article.html || ''
       content = await this.processImages(content, (src) => this.uploadImageByUrl(src))
-
-      // 优先使用 markdown
-      const markdown = article.markdown || content
 
       const response = await this.runtime.fetch(
         `https://my.oschina.net/u/${this.userId}/blog/save_draft`,
@@ -170,7 +167,7 @@ export class OschinaAdapter extends CodeAdapter {
             id: '',
             user_code: userToken,
             title: article.title,
-            content: markdown,
+            content: content,
             content_type: '3', // 3=markdown, 4=html
             catalog: '6680617',
             groups: '28',
